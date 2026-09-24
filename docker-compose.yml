@@ -1,0 +1,159 @@
+name: multi-app-edge
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # ----------------------------------------------------------------------
+  # Edge proxy: the single public entry point. Every app is mounted under
+  # its own path prefix on one domain.
+  # ----------------------------------------------------------------------
+  edge:
+    image: nginx:1.27-alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+    networks:
+      - edge
+    depends_on:
+      alpha:
+        condition: service_healthy
+      beta:
+        condition: service_started
+    restart: unless-stopped
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 64M
+
+  # ----------------------------------------------------------------------
+  # Shared PostgreSQL: ONE instance, one database + one login role per
+  # service. The alternative - a postgres container per project - costs
+  # 100-150 MB each and is what this setup exists to avoid.
+  # ----------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_SUPERUSER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERPASS:-postgres}
+      POSTGRES_DB: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_SUPERUSER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 256M
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    networks:
+      - data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
+
+  # ----------------------------------------------------------------------
+  # alpha: server-rendered Django app mounted at /alpha/
+  # Demonstrates SCRIPT_NAME, CSRF trusted origins and forwarded-proto
+  # handling behind a path prefix.
+  # ----------------------------------------------------------------------
+  alpha:
+    build: ./apps/alpha
+    env_file: .env
+    environment:
+      DJANGO_SCRIPT_NAME: /alpha
+      DATABASE_URL: postgres://alpha:${ALPHA_DB_PASSWORD:-alpha}@postgres:5432/alpha
+      REDIS_URL: redis://redis:6379/0
+    networks:
+      - edge
+      - data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/alpha/healthz')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "0.75"
+          memory: 256M
+
+  # Long-running worker. Closes stale DB connections between tasks - see
+  # docs/incidents.md, this cost me an afternoon in production.
+  alpha-worker:
+    build: ./apps/alpha
+    command: ["celery", "-A", "config", "worker", "-l", "info", "--concurrency", "2"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://alpha:${ALPHA_DB_PASSWORD:-alpha}@postgres:5432/alpha
+      REDIS_URL: redis://redis:6379/0
+    networks:
+      - data
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 192M
+
+  # ----------------------------------------------------------------------
+  # beta: static single-page app mounted at /beta/
+  # Stand-in for a Vite build; the point is the base-path handling.
+  # ----------------------------------------------------------------------
+  beta:
+    build: ./apps/beta
+    networks:
+      - edge
+    restart: unless-stopped
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 32M
+
+networks:
+  edge:
+  data:
+
+volumes:
+  pgdata:
