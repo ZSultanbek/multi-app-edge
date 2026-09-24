@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  stack:
+    name: Build and verify the whole stack
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate the compose file
+        run: docker compose config --quiet
+
+      - name: Check the nginx configuration
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}/nginx/conf.d:/etc/nginx/conf.d:ro" \
+            nginx:1.27-alpine nginx -t
+
+      - name: Build images
+        run: docker compose build
+
+      - name: Start the stack
+        run: |
+          cp .env.example .env
+          docker compose up -d
+
+      - name: Wait for the edge to answer
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8080/healthz >/dev/null; then
+              echo "edge is up"; exit 0
+            fi
+            sleep 2
+          done
+          echo "edge never became healthy"; exit 1
+
+      # The actual point of this pipeline: every app must answer THROUGH the
+      # proxy, under its own prefix. Building the images proves nothing about
+      # whether the routing works.
+      - name: Verify alpha is reachable under its prefix
+        run: |
+          curl -fsS http://localhost:8080/alpha/healthz | grep -q '"status": "ok"'
+
+      - name: Verify alpha can reach the database
+        run: curl -fsS http://localhost:8080/alpha/readyz | grep -q ready
+
+      - name: Verify beta serves its assets with correct content types
+        run: |
+          curl -fsS http://localhost:8080/beta/ | grep -q '<base href="/beta/">'
+          curl -fsSI http://localhost:8080/beta/app.js | grep -qi 'content-type: .*javascript'
+          curl -fsSI http://localhost:8080/beta/app.css | grep -qi 'content-type: text/css'
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose logs --no-color --tail 200
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
