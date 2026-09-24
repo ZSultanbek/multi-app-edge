@@ -43,6 +43,12 @@ services:
       POSTGRES_USER: ${POSTGRES_SUPERUSER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_SUPERPASS:-postgres}
       POSTGRES_DB: postgres
+      # The init script needs these. Without them the tenant roles are
+      # created with the shell defaults while the apps connect with the
+      # values from .env - two different passwords, and an auth failure
+      # that looks like a config typo.
+      ALPHA_DB_PASSWORD: ${ALPHA_DB_PASSWORD:-alpha}
+      GAMMA_DB_PASSWORD: ${GAMMA_DB_PASSWORD:-gamma}
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./postgres/init:/docker-entrypoint-initdb.d:ro

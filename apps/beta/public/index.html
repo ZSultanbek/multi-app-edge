@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- The app is served at /beta/ but built at /. This base tag is the static
+     equivalent of Vite's `base` option and React Router's `basename`. -->
+<base href="/beta/">
+<title>beta</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <main>
+    <h1>beta</h1>
+    <p>Static app mounted under a path prefix.</p>
+    <p id="asset-check">checking asset paths…</p>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
